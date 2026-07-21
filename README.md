@@ -1,4 +1,4 @@
-# 3D CNN + PointNet for Groundwater Arsenic Risk Prediction
+# Groundwater Arsenic Risk Prediction Model
 
 This project develops a deep learning framework for predicting groundwater arsenic contamination risk using a combination of **3D Convolutional Neural Networks (3D CNNs)** and **PointNet-based spatial learning**.
 
