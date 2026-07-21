@@ -25,7 +25,7 @@ val_loader=get_validation_dataloader(dataset,BATCH_SIZE,12)
 sample=next(iter(train_loader))
 input_channels=sample["voxel"].shape[1]
 
-backbone=CNN(input_channels) if choice=="1" else PointNetHead(input_features=6,embedding_size=256)
+backbone=CNN(input_channels) if choice=="1" else PointNetHead(input_features=15,embedding_size=256)
 
 class Model(nn.Module):
     def __init__(self,b):
@@ -35,7 +35,7 @@ class Model(nn.Module):
         if choice=="1": # CNN
             feature_size = 256
         else: # PointNet
-            feature_size = 768
+            feature_size = 1024
 
         self.regression = nn.Linear(feature_size,1)
         self.classification = nn.Linear(feature_size,3)

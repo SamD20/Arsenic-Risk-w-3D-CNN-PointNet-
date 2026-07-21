@@ -6,7 +6,7 @@ from pyproj import Transformer
 from dataloader import RISK_CLASSES
 
 transformer = Transformer.from_crs("EPSG:32646","EPSG:4326",always_xy=True)
-MAIN_FOLDER = "../data"
+MAIN_FOLDER = "./data"
 RASTER_FOLDER = "./rasters"
 VOXELS_FOLDER = "./voxels"
 CSV_FILE = "wells.csv"
@@ -22,6 +22,12 @@ class ArsenicDataset:
         self.Depth = self.df["Depth"].values.astype(np.float32)
         self.Arsenic = self.df["Arsenic"].values.astype(np.float32)
         self.logArsenic = np.log1p(self.Arsenic)
+
+        self.x_mean = self.X.mean()
+        self.x_std = self.X.std()
+        self.y_mean = self.Y.mean()
+        self.y_std = self.Y.std()
+        self.depth_std = self.Depth.std()
 
         self.maxDepth = self.Depth.max()
         self.maxLogArsenic = np.percentile(self.logArsenic, 99)
@@ -218,41 +224,62 @@ class ArsenicDataset:
 
     def pointNet(self, target_index):
         targetVoxel = self.getVoxelID(target_index)
-        neighbour_voxels = self.getNeighbours(targetVoxel)
         well_ids = set()
 
-        for voxel in neighbour_voxels:
-            start = self.voxels[voxel]["well_start"]
-            count = self.voxels[voxel]["well_count"]
+        for voxel in self.getNeighbours(targetVoxel):
+            start,count = self.voxels[voxel]["well_start"],self.voxels[voxel]["well_count"]
             well_ids.update(self.voxel_wells[start:start+count])
 
-        if target_index in well_ids:
-            well_ids.discard(target_index)
-            if len(well_ids) == 0:
-                return np.empty((0, 6), dtype=np.float32)
+        well_ids.discard(target_index)
 
-        well_ids = np.fromiter(well_ids, dtype=np.uint32)
+        if not well_ids:
+            return np.empty((0,15),dtype=np.float32)
 
-        target_x = self.X[target_index]
-        target_y = self.Y[target_index]
-        target_z = self.Depth[target_index]
+        well_ids = np.fromiter(well_ids,dtype=np.uint32)
 
-        cloud = np.zeros((len(well_ids), 6), dtype=np.float32)
+        tx,ty,tz = self.X[target_index],self.Y[target_index],self.Depth[target_index]
 
-        for i, wid in enumerate(well_ids):
+        dx = self.X[well_ids]-tx
+        dy = self.Y[well_ids]-ty
+        dz = self.Depth[well_ids]-tz
+        distance = np.sqrt(dx*dx+dy*dy+dz*dz)+1e-6
 
-            dx = self.X[wid] - target_x
-            dy = self.Y[wid] - target_y
-            dz = self.Depth[wid] - target_z
-            distance = np.sqrt(dx*dx + dy*dy + dz*dz)
+        depth = self.Depth[well_ids]
+        arsenic = self.logArsenic[well_ids]
 
-            cloud[i] = [
-                dx / TOTAL_PATCH_SIZE[0],
-                dy / TOTAL_PATCH_SIZE[1],
-                dz / TOTAL_PATCH_SIZE[2],
-                distance / self.maxDistance,
-                self.Depth[wid] / self.maxDepth,
-                np.clip(self.logArsenic[wid] / self.maxLogArsenic, 0, 1)
-            ]
-        
+        weights = 1/distance
+        local_mean = np.sum(arsenic*weights)/np.sum(weights)
+        local_std = np.sqrt(np.mean((arsenic-local_mean)**2))
+
+        depth_diff = depth-depth.mean()
+
+        target_stratum = np.digitize(tz,[15.3,45,65,90,150])
+        strata = np.digitize(depth,[15.3,45,65,90,150])
+        same_stratum = arsenic[strata==target_stratum].mean() if np.any(strata==target_stratum) else local_mean
+
+        cloud = np.stack([
+            dx/TOTAL_PATCH_SIZE[0],
+            dy/TOTAL_PATCH_SIZE[1],
+            dz/TOTAL_PATCH_SIZE[2],
+
+            # target global coords (repeat for every neighbour)
+            np.full(len(well_ids), (tx - self.x_mean) / (self.x_std + 1e-6)),
+            np.full(len(well_ids), (ty - self.y_mean) / (self.y_std + 1e-6)),
+            np.full(len(well_ids), tz / self.maxDepth),
+
+            # neighbour global coords
+            (self.X[well_ids] - self.x_mean) / (self.x_std + 1e-6),
+            (self.Y[well_ids] - self.y_mean) / (self.y_std + 1e-6),
+            self.Depth[well_ids] / self.maxDepth,
+
+            distance/self.maxDistance,
+            depth_diff / (self.depth_std + 1e-6),
+
+            np.clip(arsenic/self.maxLogArsenic,0,1),
+
+            np.full(len(well_ids),np.clip(local_mean/self.maxLogArsenic,0,1)),
+            np.full(len(well_ids),np.clip(local_std/self.maxLogArsenic,0,1)),
+            np.full(len(well_ids),np.clip(same_stratum/self.maxLogArsenic,0,1))
+        ],axis=1).astype(np.float32)
+
         return cloud
