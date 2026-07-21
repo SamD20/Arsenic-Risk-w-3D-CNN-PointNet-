@@ -6,7 +6,7 @@ from pyproj import Transformer
 from dataloader import RISK_CLASSES
 
 transformer = Transformer.from_crs("EPSG:32646","EPSG:4326",always_xy=True)
-MAIN_FOLDER = "./data"
+MAIN_FOLDER = "../data"
 RASTER_FOLDER = "./rasters"
 VOXELS_FOLDER = "./voxels"
 CSV_FILE = "wells.csv"
@@ -41,7 +41,7 @@ class ArsenicDataset:
         self.lat_std = lats.std()
 
         self.rasters = {}
-        raster_folder = "./data/rasters/"
+        raster_folder = os.path.join(MAIN_FOLDER, RASTER_FOLDER)
 
         for file in os.listdir(raster_folder):
             if file.endswith((".tif",".tiff")):
