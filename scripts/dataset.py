@@ -42,6 +42,7 @@ class ArsenicDataset:
 
         self.rasters = {}
         raster_folder = os.path.join(MAIN_FOLDER, RASTER_FOLDER)
+        isEmbedded = {"geology_specific_250m.tif" : 16}
 
         for file in os.listdir(raster_folder):
             if file.endswith((".tif",".tiff")):
@@ -58,6 +59,9 @@ class ArsenicDataset:
                         valid.mean(),
                     "std":
                         valid.std(),
+                    "isEmbedded" : file in isEmbedded,
+                    "EmbeddingSize" : isEmbedded[file] + 1 if file in isEmbedded else None,
+                    "classes": int(np.nanmax(data)) if file in isEmbedded else None,
                 }
 
         lookup_dtype = np.dtype([("vx", np.int32),("vy", np.int32),("vz", np.int32),("voxel_id", np.uint32)])
@@ -181,7 +185,12 @@ class ArsenicDataset:
                 for z in range(0, self.zrange):
                     for r, file in enumerate(self.rasters.keys()):
                         value = patches[r]
-                        tensor[r,x,y,z] = np.nan_to_num((value - self.rasters[file]["mean"]) / self.rasters[file]["std"],nan=0)
+                        if self.rasters[file]["categorical"]:
+                            if np.isnan(value) or value < 0:
+                                value = self.rasters[file]["classes"] - 1
+                            tensor[r,x,y,z] = value
+                        else:
+                            tensor[r,x,y,z] = np.nan_to_num((value - self.rasters[file]["mean"]) / self.rasters[file]["std"],nan=0)
 
                     zchange = z - (self.zrange // 2)
                     coordz = voxelCoords[2] + (zchange * self.voxel_size[2])
