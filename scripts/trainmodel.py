@@ -11,7 +11,7 @@ EPOCHS=100
 LR=5e-5
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE=32
-CLASS_WEIGHT=0.2
+CLASS_WEIGHT=0.1
 
 dataset=ArsenicDataset()
 train_loader=get_dataloader(dataset,BATCH_SIZE,12)

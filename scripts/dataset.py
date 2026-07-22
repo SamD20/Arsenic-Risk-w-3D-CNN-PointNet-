@@ -229,11 +229,11 @@ class ArsenicDataset:
                             tensor[raster_channels + 4,x,y,z] = depth.std() / self.maxDepth
                             tensor[raster_channels + 5,x,y,z] = 1 #has data?
                         else:
-                            tensor[raster_channels + 0,x,y,z] = -1
-                            tensor[raster_channels + 1,x,y,z] = -1
-                            tensor[raster_channels + 2,x,y,z] = -1
-                            tensor[raster_channels + 3,x,y,z] = -1
-                            tensor[raster_channels + 4,x,y,z] = -1
+                            tensor[raster_channels + 0,x,y,z] = 0
+                            tensor[raster_channels + 1,x,y,z] = 0
+                            tensor[raster_channels + 2,x,y,z] = 0
+                            tensor[raster_channels + 3,x,y,z] = 0
+                            tensor[raster_channels + 4,x,y,z] = 0
                             tensor[raster_channels + 5,x,y,z] = 0 #has data?
 
                         tensor[raster_channels + 6,x,y,z] = lon_input
