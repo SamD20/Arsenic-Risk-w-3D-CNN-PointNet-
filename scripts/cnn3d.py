@@ -2,55 +2,50 @@ import torch
 import torch.nn as nn
 
 class CNN(nn.Module):
-
-    def __init__(self,input_channels):
+    def __init__(self,raster_info,extra_channels=0):
         super().__init__()
+        self.embeddings=nn.ModuleDict()
+        self.raster_names=list(raster_info.keys())
+        self.embed_names={}
+        c=extra_channels
 
-        self.features = nn.Sequential(
-            nn.Conv3d(input_channels,32,kernel_size=3,padding=1),
-            nn.BatchNorm3d(32),
-            nn.ReLU(),
+        for n,i in raster_info.items():
+            if i["isEmbedded"]:
+                key=n.replace(".","_")
+                self.embed_names[n]=key
+                d=i["EmbeddingSize"]
+                self.embeddings[key]=nn.Embedding(i["classes"],d,padding_idx=0)
+                c+=d
+            else:
+                c+=1
 
-            nn.Conv3d(32,64,kernel_size=3,padding=1),
-            nn.BatchNorm3d(64),
-            nn.ReLU(),
-
-            nn.Conv3d(64,128,kernel_size=3,padding=1),
-            nn.BatchNorm3d(128),
-            nn.ReLU(),
-
+        self.features=nn.Sequential(
+            nn.Conv3d(c,32,3,padding=1),nn.BatchNorm3d(32),nn.ReLU(),
+            nn.Conv3d(32,64,3,padding=1),nn.BatchNorm3d(64),nn.ReLU(),
+            nn.Conv3d(64,128,3,padding=1),nn.BatchNorm3d(128),nn.ReLU(),
             nn.MaxPool3d(2),
-
-            nn.Conv3d(128,256,3,padding=1),
-            nn.BatchNorm3d(256),
-            nn.ReLU()
+            nn.Conv3d(128,256,3,padding=1),nn.BatchNorm3d(256),nn.ReLU()
         )
 
-        self.pool = nn.AdaptiveAvgPool3d(
-            (1,1,1)
-        )
-
-        self.embedding = nn.Sequential(
+        self.pool=nn.AdaptiveAvgPool3d(1)
+        self.embedding=nn.Sequential(
             nn.Flatten(),
             nn.Linear(256,256),
             nn.ReLU(),
             nn.Dropout(0.3)
         )
 
+    def forward(self,x):
+        ch=[]
 
-    def forward(
-        self,
-        x
-    ):
+        for i,n in enumerate(self.raster_names):
+            if n in self.embed_names:
+                e=self.embeddings[self.embed_names[n]](x[:,i].long())
+                ch.append(e.permute(0,4,1,2,3))
+            else:
+                ch.append(x[:,i:i+1])
 
-        x = self.features(
-            x
-        )
+        if x.shape[1]>len(self.raster_names):
+            ch.append(x[:,len(self.raster_names):])
 
-        x = self.pool(
-            x
-        )
-
-        return self.embedding(
-            x
-        )
+        return self.embedding(self.pool(self.features(torch.cat(ch,1))))

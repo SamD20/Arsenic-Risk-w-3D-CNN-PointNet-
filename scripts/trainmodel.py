@@ -7,11 +7,11 @@ from dataloader import get_dataloader,get_validation_dataloader
 from cnn3d import CNN
 from pointnet import PointNetHead
 
-EPOCHS=50
-LR=1e-4
+EPOCHS=100
+LR=5e-5
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE=32
-CLASS_WEIGHT=0.5
+CLASS_WEIGHT=0.2
 
 dataset=ArsenicDataset()
 train_loader=get_dataloader(dataset,BATCH_SIZE,12)
@@ -21,9 +21,9 @@ sample=next(iter(train_loader))
 input_channels=sample["voxel"].shape[1]
 
 class MultiTaskModel(nn.Module):
-    def __init__(self,input_channels):
+    def __init__(self):
         super().__init__()
-        self.cnn=CNN(input_channels)
+        self.cnn=CNN(dataset.rasters,extra_channels=8)
         self.pointnet=PointNetHead(input_features=15,embedding_size=256)
         self.fusion=nn.Sequential(nn.Linear(1280,256),nn.ReLU(),nn.Dropout(0.3))
         self.regression_head=nn.Linear(256,1)
@@ -35,7 +35,7 @@ class MultiTaskModel(nn.Module):
         features=self.fusion(torch.cat([cnn_features,point_features],1))
         return {"arsenic":self.regression_head(features).squeeze(1),"risk":self.classification_head(features)}
 
-model=MultiTaskModel(input_channels).to(DEVICE)
+model=MultiTaskModel().to(DEVICE)
 
 reg_loss=nn.MSELoss()
 cls_loss=nn.CrossEntropyLoss()

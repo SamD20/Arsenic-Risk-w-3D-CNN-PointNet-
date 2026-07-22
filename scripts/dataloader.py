@@ -2,11 +2,11 @@ import torch
 from torch.utils.data import DataLoader, Sampler, SubsetRandomSampler
 import numpy as np
 
-BATCH_SIZE = 32
-NUM_WORKERS = 12
+BATCH_SIZE = 64
+NUM_WORKERS = 15
 RANDOM_SEED = 42
-EPOCH_SIZE = 12000 #wells per epoch
-VALIDATION_SIZE = 12000 #wells per validation
+EPOCH_SIZE = 25000 #wells per epoch
+VALIDATION_SIZE = 25000 #wells per validation
 RISK_CLASSES = [10,50]
 # <=10 = Low Risk, 10 to <=50 = Medium Risk, >50 = High Risk
 
@@ -75,7 +75,7 @@ def get_dataloader(dataset,batch_size=BATCH_SIZE,workers=NUM_WORKERS):
         num_workers=workers,
         collate_fn=collate_fn,
         pin_memory=True,
-        persistent_workers=True
+        persistent_workers=True,
     )
 
     return loader

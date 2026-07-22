@@ -42,13 +42,14 @@ class ArsenicDataset:
 
         self.rasters = {}
         raster_folder = os.path.join(MAIN_FOLDER, RASTER_FOLDER)
-        isEmbedded = {"geology_specific_250m.tif" : 16}
+        isEmbedded = {"geology_specific_250m.tif" : 32}
 
         for file in os.listdir(raster_folder):
             if file.endswith((".tif",".tiff")):
                 path = os.path.join(raster_folder,file)
                 src = rasterio.open(path)
-                data = src.read(1, boundless=True, fill_value=np.nan)
+                data = src.read(1, boundless=True, masked=True).astype(np.float32)
+                data = data.filled(-1)
                 valid = data[~np.isnan(data)]
                 self.rasters[file] = {
                     "data":
@@ -60,8 +61,8 @@ class ArsenicDataset:
                     "std":
                         valid.std(),
                     "isEmbedded" : file in isEmbedded,
-                    "EmbeddingSize" : isEmbedded[file] + 1 if file in isEmbedded else None,
-                    "classes": int(np.nanmax(data)) if file in isEmbedded else None,
+                    "EmbeddingSize" : isEmbedded[file] if file in isEmbedded else None,
+                    "classes": int(np.nanmax(data)) + 1 if file in isEmbedded else None,
                 }
 
         lookup_dtype = np.dtype([("vx", np.int32),("vy", np.int32),("vz", np.int32),("voxel_id", np.uint32)])
@@ -182,15 +183,25 @@ class ArsenicDataset:
                 patches = self.getRasterValue(coordx, coordy)
                 raster_channels = len(self.rasters)
 
-                for z in range(0, self.zrange):
-                    for r, file in enumerate(self.rasters.keys()):
-                        value = patches[r]
-                        if self.rasters[file]["categorical"]:
-                            if np.isnan(value) or value < 0:
-                                value = self.rasters[file]["classes"] - 1
-                            tensor[r,x,y,z] = value
-                        else:
-                            tensor[r,x,y,z] = np.nan_to_num((value - self.rasters[file]["mean"]) / self.rasters[file]["std"],nan=0)
+                lon, lat = transformer.transform(coordx, coordy)
+                lon_input = (lon - self.lon_mean) / self.lon_std
+                lat_input = (lat - self.lat_mean) / self.lat_std
+
+                raster_channels = len(self.rasters)
+                raster_values = np.zeros(raster_channels, dtype=np.float32)
+
+                for r, file in enumerate(self.rasters.keys()):
+                    value = patches[r]
+
+                    if self.rasters[file]["isEmbedded"]:
+                        if np.isnan(value) or value == 0:
+                            value = 0   # NoData embedding index
+                        raster_values[r] = value
+                    else:
+                        raster_values[r] = np.nan_to_num((value - self.rasters[file]["mean"]) / self.rasters[file]["std"],nan=0)
+
+                for z in range(self.zrange):
+                    tensor[:raster_channels, x, y, z] = raster_values
 
                     zchange = z - (self.zrange // 2)
                     coordz = voxelCoords[2] + (zchange * self.voxel_size[2])
@@ -225,9 +236,8 @@ class ArsenicDataset:
                             tensor[raster_channels + 4,x,y,z] = -1
                             tensor[raster_channels + 5,x,y,z] = 0 #has data?
 
-                        lon, lat = transformer.transform(coordx, coordy)
-                        tensor[raster_channels + 6,x,y,z] = (lon - self.lon_mean) / self.lon_std
-                        tensor[raster_channels + 7,x,y,z] = (lat - self.lat_mean) / self.lat_std
+                        tensor[raster_channels + 6,x,y,z] = lon_input
+                        tensor[raster_channels + 7,x,y,z] = lat_input
 
         return tensor
 

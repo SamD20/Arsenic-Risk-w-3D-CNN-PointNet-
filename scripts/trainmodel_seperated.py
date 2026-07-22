@@ -10,7 +10,7 @@ from cnn3d import CNN
 from pointnet import PointNetHead
 
 EPOCHS=50
-LR=1e-4
+LR=5e-5
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE=32
 CLASS_WEIGHT=0.5
@@ -25,7 +25,7 @@ val_loader=get_validation_dataloader(dataset,BATCH_SIZE,12)
 sample=next(iter(train_loader))
 input_channels=sample["voxel"].shape[1]
 
-backbone=CNN(input_channels) if choice=="1" else PointNetHead(input_features=15,embedding_size=256)
+backbone=CNN(dataset.rasters,extra_channels=8) if choice=="1" else PointNetHead(input_features=15,embedding_size=256)
 
 class Model(nn.Module):
     def __init__(self,b):
@@ -48,7 +48,7 @@ class Model(nn.Module):
         return {"arsenic":self.regression(feat).squeeze(1),"risk":self.classification(feat)}
 
 model=Model(backbone).to(DEVICE)
-reg_loss=nn.MSELoss();cls_loss=nn.CrossEntropyLoss()
+reg_loss=nn.MSELoss(); cls_loss=nn.CrossEntropyLoss()
 opt=optim.AdamW(model.parameters(),lr=LR,weight_decay=1e-4)
 best_f1=-1;best=None
 
