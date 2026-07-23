@@ -8,102 +8,85 @@ from dataloader import get_dataloader,get_validation_dataloader,NUM_WORKERS,BATC
 from cnn3d import CNN
 from pointnet import PointNetHead
 
-EPOCHS=100
-LR=5e-5
-DEVICE="cuda" if torch.cuda.is_available() else "cpu"
-CLASS_WEIGHT=0.1
-LOG_LOW=np.log(10)
-LOG_HIGH=np.log(50)
+EPOCHS,LR,DEVICE,CLASS_WEIGHT=100,5e-5,"cuda" if torch.cuda.is_available() else "cpu",0.2
+LOG_LOW,LOG_HIGH=np.log1p(10),np.log1p(50)
 
 choice=input("Pick Model:\n1. 3D CNN\n2. PointNet\n> ").strip()
-
 dataset=ArsenicDataset()
 train_loader=get_dataloader(dataset,BATCH_SIZE,NUM_WORKERS)
 val_loader=get_validation_dataloader(dataset,BATCH_SIZE,NUM_WORKERS)
-
 backbone=CNN(dataset.rasters,extra_channels=11) if choice=="1" else PointNetHead(input_features=15,embedding_size=256)
 
 def gaussian_nll(mean,log_var,target):
-    log_var=torch.clamp(log_var,-5,5)
+    log_var=torch.clamp(log_var,-3,3)
     return (((target-mean)**2)/torch.exp(log_var)+log_var).mean()
 
 def gaussian_class_probability(mean,log_var):
-    std=torch.exp(0.5*torch.clamp(log_var,-5,5))
+    mean=torch.clamp(mean,-2,8)
+    std=torch.nn.functional.softplus(torch.clamp(log_var,-3,3))+1e-3
     n=Normal(mean,std)
-    low=torch.tensor(LOG_LOW,device=mean.device)
-    high=torch.tensor(LOG_HIGH,device=mean.device)
-    p1=n.cdf(low)
-    p2=n.cdf(high)-p1
-    p3=1-n.cdf(high)
-    return torch.stack([p1,p2,p3],1)
+    low,high=torch.tensor(LOG_LOW,device=mean.device),torch.tensor(LOG_HIGH,device=mean.device)
+    p0=n.cdf(low);p1=n.cdf(high)-p0;p2=1-n.cdf(high)
+    return torch.stack([p0,p1,p2],1)
 
 class Model(nn.Module):
     def __init__(self,b):
         super().__init__()
         self.backbone=b
-        f=256 if choice=="1" else 1024
-        self.regression=nn.Linear(f,2)
+        self.regression=nn.Linear(256 if choice=="1" else 1024,2)
 
-    def forward(self,batch):
-        if choice=="1":
-            feat=self.backbone(batch["voxel"].to(DEVICE,non_blocking=True))
-        else:
-            feat=self.backbone([p.to(DEVICE,non_blocking=True) for p in batch["points"]])
-        reg=self.regression(feat)
-        return {"mean":reg[:,0],"log_var":reg[:,1]}
+    def forward(self,b):
+        x=self.backbone(b["voxel"].to(DEVICE,non_blocking=True)) if choice=="1" else self.backbone([p.to(DEVICE,non_blocking=True) for p in b["points"]])
+        y=self.regression(x)
+        return {"mean":y[:,0],"log_var":y[:,1]}
 
 model=Model(backbone).to(DEVICE)
 opt=optim.AdamW(model.parameters(),lr=LR,weight_decay=1e-4)
 scaler=torch.amp.GradScaler("cuda")
+weights=torch.tensor([1,1.7,1.2],device=DEVICE)
 
-best_f1=-1
-best=None
+best_f1,best=-1,None
 
 for epoch in range(EPOCHS):
-    model.train()
-    total_loss=0
+    model.train();total=0
 
-    for batch in tqdm(train_loader,desc=f"Epoch {epoch+1}/{EPOCHS}"):
-        y=batch["label"].to(DEVICE,non_blocking=True)
-        r=batch["risk"].to(DEVICE,non_blocking=True)
-
+    for b in tqdm(train_loader,desc=f"Epoch {epoch+1}/{EPOCHS}"):
+        y,r=b["label"].to(DEVICE,non_blocking=True),b["risk"].to(DEVICE,non_blocking=True)
         opt.zero_grad(set_to_none=True)
 
         with torch.amp.autocast("cuda"):
-            out=model(batch)
-            reg_loss=gaussian_nll(out["mean"],out["log_var"],y)
-            probs=gaussian_class_probability(out["mean"],out["log_var"])
-            cls_loss=-torch.log(probs[torch.arange(len(r),device=DEVICE),r]+1e-8).mean()
-            loss=CLASS_WEIGHT*reg_loss+cls_loss
+            o=model(b)
+            reg=gaussian_nll(o["mean"],o["log_var"],y)
+            p=gaussian_class_probability(o["mean"],o["log_var"])
+            cls=-(weights[r]*torch.log(p[torch.arange(len(r),device=DEVICE),r]+1e-8)).mean()
+            loss=CLASS_WEIGHT*reg+cls
 
         scaler.scale(loss).backward()
-        scaler.step(opt)
-        scaler.update()
-        total_loss+=loss.item()
+        scaler.unscale_(opt)
+        torch.nn.utils.clip_grad_norm_(model.parameters(),5)
+        scaler.step(opt);scaler.update()
+        total+=loss.item()
 
     model.eval()
     pred,true,rpred,rtrue=[],[],[],[]
 
     with torch.no_grad():
-        for batch in val_loader:
-            y=batch["label"].to(DEVICE,non_blocking=True)
-            r=batch["risk"].to(DEVICE,non_blocking=True)
-
+        for b in val_loader:
+            y,r=b["label"].to(DEVICE,non_blocking=True),b["risk"].to(DEVICE,non_blocking=True)
             with torch.amp.autocast("cuda"):
-                out=model(batch)
+                o=model(b)
 
-            pred.extend(out["mean"].cpu().float().numpy())
+            pred.extend(o["mean"].float().cpu().numpy())
             true.extend(y.cpu().numpy())
-
-            probs=gaussian_class_probability(out["mean"],out["log_var"])
-            rpred.extend(torch.argmax(probs,1).cpu().numpy())
+            rpred.extend(torch.argmax(gaussian_class_probability(o["mean"],o["log_var"]),1).cpu().numpy())
             rtrue.extend(r.cpu().numpy())
 
-    pred=np.exp(np.array(pred))
-    true=np.exp(np.array(true))
+    pred,true=np.array(pred),np.array(true)
+    raw_pred,raw_true=np.expm1(pred),np.expm1(true)
 
-    rmse=np.sqrt(mean_squared_error(true,pred))
-    mae=mean_absolute_error(true,pred)
+    log_rmse=np.sqrt(mean_squared_error(true,pred))
+    rmse=np.sqrt(mean_squared_error(raw_true,raw_pred))
+    mae=mean_absolute_error(raw_true,raw_pred)
     r2=r2_score(true,pred)
     pear=np.corrcoef(true,pred)[0,1]
 
@@ -113,7 +96,7 @@ for epoch in range(EPOCHS):
     f1=f1_score(rtrue,rpred,average="macro",zero_division=0)
     cm=confusion_matrix(rtrue,rpred)
 
-    print(f"Epoch {epoch+1}: Loss={total_loss/len(train_loader):.4f} F1={f1:.4f} Acc={acc:.4f} RMSE={rmse:.4f}")
+    print(f"Epoch {epoch+1}: Loss={total/len(train_loader):.4f} F1={f1:.4f} Acc={acc:.4f} LogRMSE={log_rmse:.4f} RMSE={rmse:.2f}")
     print(cm)
 
     if f1>best_f1:
