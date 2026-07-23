@@ -12,6 +12,8 @@ EPOCHS=100
 LR=5e-5
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"
 CLASS_WEIGHT=0.1
+LOG_LOW=np.log(10)
+LOG_HIGH=np.log(50)
 
 choice=input("Pick Model:\n1. 3D CNN\n2. PointNet\n> ").strip()
 
@@ -28,10 +30,12 @@ def gaussian_nll(mean,log_var,target):
 def gaussian_class_probability(mean,log_var):
     std=torch.exp(0.5*torch.clamp(log_var,-5,5))
     n=Normal(mean,std)
-    low=n.cdf(torch.tensor(10.,device=mean.device))
-    med=n.cdf(torch.tensor(50.,device=mean.device))-low
-    high=1-n.cdf(torch.tensor(50.,device=mean.device))
-    return torch.stack([low,med,high],1)
+    low=torch.tensor(LOG_LOW,device=mean.device)
+    high=torch.tensor(LOG_HIGH,device=mean.device)
+    p1=n.cdf(low)
+    p2=n.cdf(high)-p1
+    p3=1-n.cdf(high)
+    return torch.stack([p1,p2,p3],1)
 
 class Model(nn.Module):
     def __init__(self,b):
@@ -49,7 +53,6 @@ class Model(nn.Module):
         return {"mean":reg[:,0],"log_var":reg[:,1]}
 
 model=Model(backbone).to(DEVICE)
-
 opt=optim.AdamW(model.parameters(),lr=LR,weight_decay=1e-4)
 scaler=torch.amp.GradScaler("cuda")
 
@@ -68,18 +71,14 @@ for epoch in range(EPOCHS):
 
         with torch.amp.autocast("cuda"):
             out=model(batch)
-
             reg_loss=gaussian_nll(out["mean"],out["log_var"],y)
-
             probs=gaussian_class_probability(out["mean"],out["log_var"])
             cls_loss=-torch.log(probs[torch.arange(len(r),device=DEVICE),r]+1e-8).mean()
-
             loss=CLASS_WEIGHT*reg_loss+cls_loss
 
         scaler.scale(loss).backward()
         scaler.step(opt)
         scaler.update()
-
         total_loss+=loss.item()
 
     model.eval()
@@ -93,15 +92,15 @@ for epoch in range(EPOCHS):
             with torch.amp.autocast("cuda"):
                 out=model(batch)
 
-            pred.extend(out["mean"].float().cpu().numpy())
+            pred.extend(out["mean"].cpu().float().numpy())
             true.extend(y.cpu().numpy())
 
             probs=gaussian_class_probability(out["mean"],out["log_var"])
             rpred.extend(torch.argmax(probs,1).cpu().numpy())
             rtrue.extend(r.cpu().numpy())
 
-    pred=np.array(pred)
-    true=np.array(true)
+    pred=np.exp(np.array(pred))
+    true=np.exp(np.array(true))
 
     rmse=np.sqrt(mean_squared_error(true,pred))
     mae=mean_absolute_error(true,pred)
