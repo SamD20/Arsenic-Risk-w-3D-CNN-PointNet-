@@ -486,9 +486,9 @@ class ArsenicDataset:
             tensor[raster_channels + 7, vx, vy, vz] = norm_y
 
             if thisVoxel == targetVoxel:
-                tensor[raster_channels + 8] = np.clip(ars_mean / self.maxLogArsenic,0,1) #idw mean as
-                tensor[raster_channels + 9] =  np.clip(ars_std / self.maxLogArsenic,0,1) #idw std as
-                tensor[raster_channels + 10] = 1 #idw confidence
+                tensor[raster_channels + 8, vx, vy, vz] = np.clip(ars_mean / self.maxLogArsenic,0,1) #idw mean as
+                tensor[raster_channels + 9, vx, vy, vz] =  np.clip(ars_std / self.maxLogArsenic,0,1) #idw std as
+                tensor[raster_channels + 10,  vx, vy, vz] = 1 #idw confidence
         return tensor
 
     def pointNet(self, target_index):
