@@ -177,9 +177,9 @@ for voxel_id, row in enumerate(lookup_array):
 
     neighbours = []
 
-    for dx in range(-4,4):
-        for dy in range(-4,4):
-            for dz in range(-2,2):
+    for dx in range(-4,5):
+        for dy in range(-4,5):
+            for dz in range(-2,3):
                 if (
                     dx == 0
                     and
