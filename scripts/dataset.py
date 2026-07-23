@@ -42,7 +42,7 @@ class ArsenicDataset:
 
         self.rasters = {}
         raster_folder = os.path.join(MAIN_FOLDER, RASTER_FOLDER)
-        isEmbedded = {"geology_specific_250m.tif" : 32}
+        isEmbedded = {"geology_specific_250m.tif" : 32, "flood_index_250m.tif" : 8}
 
         for file in os.listdir(raster_folder):
             if file.endswith((".tif",".tiff")):
