@@ -7,7 +7,7 @@ class MultiTaskModel(nn.Module):
     def __init__(self,raster_info):
         super().__init__()
 
-        self.cnn=CNN(raster_info,extra_channels=8)
+        self.cnn=CNN(raster_info,extra_channels=11)
 
         self.pointnet=PointNetHead(
             input_features=15,

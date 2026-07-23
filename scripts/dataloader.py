@@ -2,11 +2,12 @@ import torch
 from torch.utils.data import DataLoader, Sampler, SubsetRandomSampler
 import numpy as np
 
-BATCH_SIZE = 64
-NUM_WORKERS = 15
+BATCH_SIZE = 256
+NUM_WORKERS = 12
+KEEP_WORKERS = True
 RANDOM_SEED = 42
-EPOCH_SIZE = 25000 #wells per epoch
-VALIDATION_SIZE = 25000 #wells per validation
+EPOCH_SIZE = 300000 #wells per epoch
+VALIDATION_SIZE = 300000 #wells per validation
 RISK_CLASSES = [10,50]
 # <=10 = Low Risk, 10 to <=50 = Medium Risk, >50 = High Risk
 
@@ -28,19 +29,19 @@ class BalancedRiskSampler(Sampler):
         low = np.random.choice(
             self.low,
             self.length // 3,
-            replace=True
+            replace=False
         )
 
         medium = np.random.choice(
             self.medium,
             self.length // 3,
-            replace=True
+            replace=False
         )
 
         high = np.random.choice(
             self.high,
             self.length // 3,
-            replace=True
+            replace=False
         )
 
         indexes = np.concatenate([low,medium,high])
@@ -75,7 +76,8 @@ def get_dataloader(dataset,batch_size=BATCH_SIZE,workers=NUM_WORKERS):
         num_workers=workers,
         collate_fn=collate_fn,
         pin_memory=True,
-        persistent_workers=True,
+        persistent_workers=KEEP_WORKERS,
+        prefetch_factor=4
     )
 
     return loader
@@ -92,5 +94,6 @@ def get_validation_dataloader(dataset, batch_size=BATCH_SIZE, workers=NUM_WORKER
         num_workers=workers,
         collate_fn=collate_fn,
         pin_memory=True,
-        persistent_workers=True
+        persistent_workers=KEEP_WORKERS,
+        prefetch_factor=4
     )
