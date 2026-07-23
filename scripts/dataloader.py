@@ -18,12 +18,14 @@ def collate_fn(batch):
     points = [torch.tensor(item["points"],dtype=torch.float32) for item in batch]
     labels = torch.tensor([item["label"] for item in batch],dtype=torch.float32)
     risk = torch.tensor([item["risk"] for item in batch],dtype=torch.long)
+    ordinal = torch.tensor(np.stack([x["ordinal"] for x in batch]),dtype=torch.float32)
 
     return {
         "voxel": voxels,
         "points": points,
         "label": labels,
-        "risk": risk
+        "risk": risk,
+        "ordinal" : ordinal
     }
 
 def get_dataloader(dataset,batch_size=BATCH_SIZE,workers=NUM_WORKERS):

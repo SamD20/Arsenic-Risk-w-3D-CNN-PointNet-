@@ -20,13 +20,25 @@ val_loader=get_validation_dataloader(dataset,BATCH_SIZE,NUM_WORKERS)
 
 backbone=CNN(dataset.rasters,extra_channels=11) if choice=="1" else PointNetHead(input_features=15,embedding_size=256)
 
+def ordinal_to_class(prob):
+
+    gt10 = prob[:,0] > 0.5
+    gt50 = prob[:,1] > 0.5
+
+    pred = torch.zeros_like(prob[:,0]).long()
+
+    pred[gt10 & ~gt50] = 1
+    pred[gt50] = 2
+
+    return pred
+
 class Model(nn.Module):
     def __init__(self,b):
         super().__init__()
         self.backbone=b
         f=256 if choice=="1" else 1024
         self.regression=nn.Linear(f,1)
-        self.classification=nn.Linear(f,3)
+        self.classification=nn.Linear(f,2)
 
     def forward(self,batch):
         if choice=="1":
@@ -41,7 +53,7 @@ class Model(nn.Module):
 model=Model(backbone).to(DEVICE)
 
 reg_loss=nn.MSELoss()
-cls_loss=nn.CrossEntropyLoss()
+cls_loss = nn.BCEWithLogitsLoss()
 
 opt=optim.AdamW(
     model.parameters(),
@@ -60,7 +72,7 @@ for epoch in range(EPOCHS):
     for batch in tqdm(train_loader,desc=f"Epoch {epoch+1}/{EPOCHS}"):
 
         y=batch["label"].to(DEVICE,non_blocking=True)
-        r=batch["risk"].to(DEVICE,non_blocking=True)
+        r=batch["ordinal"].to(DEVICE,non_blocking=True)
 
         opt.zero_grad(set_to_none=True)
 
@@ -85,7 +97,7 @@ for epoch in range(EPOCHS):
 
             pred.extend(out["arsenic"].float().cpu().numpy())
             true.extend(y.cpu().numpy())
-            rpred.extend(torch.argmax(out["risk"],1).cpu().numpy())
+            rpred.extend(ordinal_to_class(prob).cpu().numpy())
             rtrue.extend(r.cpu().numpy())
 
     pred=np.array(pred)

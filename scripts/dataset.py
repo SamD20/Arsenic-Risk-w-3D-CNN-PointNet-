@@ -154,11 +154,17 @@ class ArsenicDataset:
         else:
             risk = 2
 
+        ordinal = np.array([
+            risk >= 1,   # above 10
+            risk >= 2    # above 50
+        ], dtype=np.float32)
+
         return {
         "voxel": self.cnnInput(idx),
         "points": self.pointNet(idx),
         "label": self.logArsenic[idx],
-        "risk": risk
+        "risk": risk,
+        "ordinal": ordinal
         }
     
     def getVoxelID(self, well_index):
