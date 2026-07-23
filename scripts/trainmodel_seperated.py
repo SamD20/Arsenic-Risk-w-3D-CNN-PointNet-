@@ -97,6 +97,7 @@ for epoch in range(EPOCHS):
 
             pred.extend(out["arsenic"].float().cpu().numpy())
             true.extend(y.cpu().numpy())
+            prob = torch.sigmoid(out["risk"])
             rpred.extend(ordinal_to_class(prob).cpu().numpy())
             rtrue.extend(r.cpu().numpy())
 
