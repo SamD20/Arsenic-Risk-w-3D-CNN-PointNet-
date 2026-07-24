@@ -3,7 +3,7 @@ from torch.utils.data import DataLoader, Sampler, SubsetRandomSampler
 import numpy as np
 
 BATCH_SIZE = 256
-NUM_WORKERS = 12
+NUM_WORKERS = 6
 KEEP_WORKERS = True
 RANDOM_SEED = 42
 EPOCH_SIZE = 300000 #wells per epoch
@@ -40,7 +40,7 @@ def get_dataloader(dataset,batch_size=BATCH_SIZE,workers=NUM_WORKERS):
         collate_fn=collate_fn,
         pin_memory=True,
         persistent_workers=KEEP_WORKERS,
-        prefetch_factor=4
+        prefetch_factor=2
     )
 
     return loader
@@ -57,5 +57,5 @@ def get_validation_dataloader(dataset, batch_size=BATCH_SIZE, workers=NUM_WORKER
         collate_fn=collate_fn,
         pin_memory=True,
         persistent_workers=KEEP_WORKERS,
-        prefetch_factor=4
+        prefetch_factor=2
     )

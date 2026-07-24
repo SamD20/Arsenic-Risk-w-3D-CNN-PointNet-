@@ -65,6 +65,15 @@ class ArsenicDataset:
                     "classes": int(np.nanmax(data)) + 1 if file in isEmbedded else None,
                 }
 
+        self.raster_channels = 0
+
+        for raster in self.rasters.values():
+
+            if raster["isEmbedded"]:
+                self.raster_channels += raster["classes"]
+            else:
+                self.raster_channels += 1
+                
         lookup_dtype = np.dtype([("vx", np.int32),("vy", np.int32),("vz", np.int32),("voxel_id", np.uint32)])
         lookup = np.memmap(os.path.join(MAIN_FOLDER, VOXELS_FOLDER, "voxel_lookup.dat"),dtype=lookup_dtype,mode="r")
         self.lookup = {}
@@ -92,6 +101,8 @@ class ArsenicDataset:
         self.yrange = int(TOTAL_PATCH_SIZE[1] / self.voxel_size[1])
         self.zrange = int(TOTAL_PATCH_SIZE[2] / self.voxel_size[2])
 
+        self.empty_tensor = np.zeros((self.raster_channels+18,self.xrange,self.yrange,self.zrange),dtype=np.float32)
+
         print("\nBuilding voxel statistics cache...")
 
         voxel_count = len(self.voxels)
@@ -104,6 +115,14 @@ class ArsenicDataset:
                 ("arsenic_sq_sum", np.float32),
                 ("depth_sum", np.float32),
                 ("depth_sq_sum", np.float32),
+                ("mean", np.float32),
+                ("std", np.float32),
+                ("median", np.float32),
+                ("p10", np.float32),
+                ("p25", np.float32),
+                ("p75", np.float32),
+                ("p90", np.float32),
+                ("p95", np.float32),
             ],
         )
 
@@ -128,9 +147,18 @@ class ArsenicDataset:
             self.voxel_stats["depth_sum"][voxel_id] = depth.sum()
             self.voxel_stats["depth_sq_sum"][voxel_id] = np.square(depth).sum()
 
+            self.voxel_stats["median"][voxel_id] = np.quantile(arsenic, 0.50)
+            self.voxel_stats["p10"][voxel_id] = np.quantile(arsenic, 0.10)
+            self.voxel_stats["p25"][voxel_id] = np.quantile(arsenic, 0.25)
+            self.voxel_stats["p75"][voxel_id] = np.quantile(arsenic, 0.75)
+            self.voxel_stats["p90"][voxel_id] = np.quantile(arsenic, 0.90)
+            self.voxel_stats["p95"][voxel_id] = np.quantile(arsenic, 0.95)
+
         self.voxel_layout = {}
         print("\nComputing Voxel Layout...")
         self.buildVoxelLayout()
+
+        self.idw_cache = {}
 
         self.raster_cache = {}
         print("\nBuilding raster cache...")
@@ -194,96 +222,82 @@ class ArsenicDataset:
 
         return neighbours
 
-    def calculateIDW(self, neighbour_voxels, target_index):
+    def calculateVoxelIDW(self, voxel_id):
 
-        voxels = np.array(list(neighbour_voxels), dtype=np.uint32)
-        stats = self.voxel_stats[voxels]
+        if voxel_id in self.idw_cache:
+            return self.idw_cache[voxel_id]
 
-        valid = stats["well_count"] > 0
+        voxel = self.voxels[voxel_id]
 
-        voxels = voxels[valid]
-        stats = stats[valid]
+        cx = voxel["centroid_x"]
+        cy = voxel["centroid_y"]
+        cz = voxel["centroid_z"]
 
-        if len(voxels) == 0:
-            return 0, 0, 0
+        well_ids = []
 
-        target_voxel = self.getVoxelID(target_index)
+        for n in self.getNeighbours(voxel_id):
+            start = self.voxels[n]["well_start"]
+            count = self.voxels[n]["well_count"]
 
-        stats = stats.copy()
+            if count:
+                well_ids.extend(
+                    self.voxel_wells[start:start+count]
+                )
 
-        target_mask = voxels == target_voxel
+        if len(well_ids) == 0:
+            result = np.zeros(9,dtype=np.float32)
+            self.idw_cache[voxel_id] = result
+            return result
 
-        if np.any(target_mask):
+        well_ids = np.asarray(well_ids)
 
-            count = stats["well_count"][target_mask][0]
-
-            if count > 1:
-                stats["well_count"][target_mask] -= 1
-
-                stats["arsenic_sum"][target_mask] -= self.logArsenic[target_index]
-                stats["arsenic_sq_sum"][target_mask] -= self.logArsenic[target_index] ** 2
-
-                stats["depth_sum"][target_mask] -= self.Depth[target_index]
-                stats["depth_sq_sum"][target_mask] -= self.Depth[target_index] ** 2
-
-            else:
-                keep = ~target_mask
-                voxels = voxels[keep]
-                stats = stats[keep]
-
-                if len(voxels) == 0:
-                    return 0, 0, 0
-
-        coords = self.voxels[voxels]
-
-        dx = coords["centroid_x"] - self.X[target_index]
-        dy = coords["centroid_y"] - self.Y[target_index]
-        dz = coords["centroid_z"] - self.Depth[target_index]
+        dx = self.X[well_ids] - cx
+        dy = self.Y[well_ids] - cy
+        dz = self.Depth[well_ids] - cz
 
         distance = np.sqrt(
-            dx * dx +
-            dy * dy +
-            5 * dz * dz
+            dx**2 +
+            dy**2 +
+            5*dz**2
         ) + 1e-6
 
         weights = 1 / distance
+        weights /= weights.sum()
 
-        voxel_mean = (
-            stats["arsenic_sum"] /
-            stats["well_count"]
-        )
+        arsenic = self.logArsenic[well_ids]
 
-        mean = (
-            np.sum(weights * voxel_mean) /
-            weights.sum()
-        )
-
-        voxel_var = (
-            stats["arsenic_sq_sum"] /
-            stats["well_count"]
-            -
-            voxel_mean ** 2
-        )
-
-        voxel_var = np.maximum(voxel_var, 0)
+        mean = np.sum(weights * arsenic)
 
         std = np.sqrt(
-            np.sum(weights * voxel_var) /
-            weights.sum()
+            np.sum(weights*(arsenic-mean)**2)
         )
 
-        wells = int(stats["well_count"].sum())
+        order = np.argsort(arsenic)
 
-        confidence = (
-            (1 - np.exp(-wells / 20.0)) *
-            np.mean(np.exp(-distance / 500.0))
-        )
+        values = arsenic[order]
+        w = weights[order]
 
-        return (
-            np.clip(mean / self.maxLogArsenic, 0, 1),
-            np.clip(std / self.maxLogArsenic, 0, 1),
-            np.clip(confidence, 0, 1)
-        )
+        cumulative = np.cumsum(w)
+
+        result = np.array([
+            mean/self.maxLogArsenic,
+            std/self.maxLogArsenic,
+            np.interp(0.50,cumulative,values),
+            np.interp(0.10,cumulative,values),
+            np.interp(0.25,cumulative,values),
+            np.interp(0.75,cumulative,values),
+            np.interp(0.90,cumulative,values),
+            np.interp(0.95,cumulative,values),
+            (
+                (1-np.exp(-len(well_ids)/20))
+                *
+                np.mean(np.exp(-distance/500))
+            )
+        ],dtype=np.float32)
+
+        self.idw_cache[voxel_id] = result
+
+        return result
 
     def getRasterValue(self, x, y):
         values = []
@@ -379,7 +393,7 @@ class ArsenicDataset:
             cx = voxel["centroid_x"]
             cy = voxel["centroid_y"]
 
-            patch = []
+            patch_channels = []
 
             for raster in self.rasters.values():
 
@@ -388,107 +402,351 @@ class ArsenicDataset:
 
                 px, py = ~transform * (cx, cy)
 
-                px=int(px)
-                py=int(py)
+                px = int(px)
+                py = int(py)
 
-                half = self.xrange//2
+                half = self.xrange // 2
 
                 crop = data[
                     py-half:py+half+1,
                     px-half:px+half+1
                 ].copy()
 
+
+                # =========================
+                # EMBEDDED RASTERS
+                # =========================
+
                 if raster["isEmbedded"]:
+
+                    # remove invalid values
                     crop[crop < 0] = 0
+
+                    classes = raster["classes"]
+
+                    # one-hot encode
+                    embedding = np.eye(
+                        classes,
+                        dtype=np.float32
+                    )[crop.astype(np.int32)]
+
+
+                    # (H,W,C) -> (C,H,W)
+                    embedding = np.moveaxis(
+                        embedding,
+                        -1,
+                        0
+                    )
+
+                    for channel in embedding:
+                        patch_channels.append(channel)
+
+
+                # =========================
+                # NORMAL RASTERS
+                # =========================
+
                 else:
+
                     crop = np.nan_to_num(
-                        (crop - raster["mean"]) / raster["std"],
+                        (crop - raster["mean"]) /
+                        (raster["std"] + 1e-6),
                         nan=0
                     )
 
-                if crop.shape != (self.xrange,self.yrange):
-                    padded=np.zeros(
-                        (self.xrange,self.yrange),
+                    patch_channels.append(crop)
+
+
+            # =========================
+            # PAD ALL CHANNELS
+            # =========================
+
+            padded_channels = []
+
+            for channel in patch_channels:
+
+                if channel.shape != (
+                    self.xrange,
+                    self.yrange
+                ):
+
+                    padded = np.zeros(
+                        (
+                            self.xrange,
+                            self.yrange
+                        ),
                         dtype=np.float32
                     )
-                    padded[:crop.shape[0],:crop.shape[1]]=crop
-                    crop=padded
 
-                patch.append(crop)
+                    h = min(
+                        channel.shape[0],
+                        self.xrange
+                    )
 
-            self.raster_cache[voxel_id]=np.stack(patch)
+                    w = min(
+                        channel.shape[1],
+                        self.yrange
+                    )
+
+                    padded[:h,:w] = channel
+
+                    channel = padded
+
+                padded_channels.append(channel)
+
+
+            self.raster_cache[voxel_id] = np.stack(
+                padded_channels
+            )
 
     def cnnInput(self, target_index):
+
         targetVoxel = self.getVoxelID(target_index)
         voxelCoords = self.getVoxelCoords(targetVoxel)
 
         layout = self.voxel_layout[targetVoxel]
-        neighbours = [x[0] for x in layout]
 
-        raster_channels = len(self.rasters)
+        tensor = self.empty_tensor.copy()
 
-        tensor = np.zeros(
-            (raster_channels + 11, self.xrange, self.yrange, self.zrange),
-            dtype=np.float32
+
+        tensor[:self.raster_channels] = (
+            self.raster_cache[targetVoxel][:,:,:,None]
         )
-        
-        raster_values = self.raster_cache[targetVoxel]
-        tensor[:raster_channels] = raster_values[:,:,:,None]
 
-        x_indices = np.arange(self.xrange) - self.xrange//2
-        y_indices = np.arange(self.yrange) - self.yrange//2
+
         z_indices = np.arange(self.zrange) - self.zrange//2
 
-        idw_mean, idw_std, idw_confidence = self.calculateIDW(neighbours, target_index)
-        tensor[raster_channels + 8] = idw_mean #idw mean as
-        tensor[raster_channels + 9] =  idw_std #idw std as
-        tensor[raster_channels + 10] = idw_confidence #idw confidence
+        voxel_depth_grid = (
+            voxelCoords[2]
+            -
+            z_indices[None,None,:] * self.voxel_size[2]
+        )
 
-        for thisVoxel, vx, vy, vz, norm_x, norm_y in self.voxel_layout[targetVoxel]:
+        voxel_depth_grid = np.broadcast_to(
+            voxel_depth_grid,
+            (
+                self.xrange,
+                self.yrange,
+                self.zrange
+            )
+        )
+
+
+        tensor[self.raster_channels+17] = (
+            voxel_depth_grid - self.Depth[target_index]
+        ) / TOTAL_PATCH_SIZE[2]
+
+
+        tensor[self.raster_channels+16] = (
+            voxel_depth_grid / self.maxDepth
+        )
+
+
+        for thisVoxel,vx,vy,vz,norm_x,norm_y in layout:
+
             stats = self.voxel_stats[thisVoxel]
 
             n = int(stats["well_count"])
 
 
-            # remove target well to prevent leakage
-            if thisVoxel == targetVoxel:
-                n -= 1
+            # =========================
+            # REAL VOXEL
+            # =========================
 
-                if n <= 0:
-                    continue
+            if n > 0:
 
-                arsenic_sum = (stats["arsenic_sum"] - self.logArsenic[target_index])
-                arsenic_sq_sum = (stats["arsenic_sq_sum"]  - self.logArsenic[target_index]**2)
 
-                depth_sum = ( stats["depth_sum"] - self.Depth[target_index])
-                depth_sq_sum = (stats["depth_sq_sum"]  - self.Depth[target_index]**2)
-                
+                mean = (
+                    stats["arsenic_sum"]
+                    /
+                    n
+                )
+
+                median = stats["median"]
+                p10 = stats["p10"]
+                p25 = stats["p25"]
+                p75 = stats["p75"]
+                p90 = stats["p90"]
+                p95 = stats["p95"]
+
+
+                depth_mean = (
+                    stats["depth_sum"]
+                    /
+                    n
+                )
+
+
+                depth_std = np.sqrt(
+                    max(
+                        0,
+                        stats["depth_sq_sum"]/n
+                        -
+                        depth_mean**2
+                    )
+                )
+
+
+                confidence = 1.0
+
+
+
+            # =========================
+            # EMPTY VOXEL -> IDW
+            # =========================
+
             else:
-                arsenic_sum = stats["arsenic_sum"]
-                arsenic_sq_sum = stats["arsenic_sq_sum"]
 
-                depth_sum = stats["depth_sum"]
-                depth_sq_sum = stats["depth_sq_sum"]
 
-            ars_mean = arsenic_sum / n
-            ars_std = np.sqrt(max(0, arsenic_sq_sum / n - ars_mean**2))
+                (
+                    mean,
+                    _,
+                    median,
+                    p10,
+                    p25,
+                    p75,
+                    p90,
+                    p95,
+                    confidence
 
-            dep_mean = depth_sum / n
-            dep_std = np.sqrt(max(0, depth_sq_sum / n - dep_mean**2))
+                ) = self.calculateVoxelIDW(thisVoxel)
 
-            tensor[raster_channels, vx, vy, vz] = np.log1p(n)
-            tensor[raster_channels+1, vx, vy, vz] = np.clip(ars_mean / self.maxLogArsenic,0,1)
-            tensor[raster_channels+2, vx, vy, vz] = np.clip(ars_std / self.maxLogArsenic,0,1)
-            tensor[raster_channels+3, vx, vy, vz] = dep_mean / self.maxDepth
-            tensor[raster_channels+4, vx, vy, vz] = dep_std / self.maxDepth
-            tensor[raster_channels+5, vx, vy, vz] = 1
-            tensor[raster_channels + 6, vx, vy, vz] = norm_x
-            tensor[raster_channels + 7, vx, vy, vz] = norm_y
 
-            if thisVoxel == targetVoxel:
-                tensor[raster_channels + 8, vx, vy, vz] = np.clip(ars_mean / self.maxLogArsenic,0,1) #idw mean as
-                tensor[raster_channels + 9, vx, vy, vz] =  np.clip(ars_std / self.maxLogArsenic,0,1) #idw std as
-                tensor[raster_channels + 10,  vx, vy, vz] = 1 #idw confidence
+                depth_mean = (
+                    self.voxels[thisVoxel]["centroid_z"]
+                )
+
+                depth_std = 0
+
+
+
+            # =========================
+            # ARSENIC DISTRIBUTION
+            # =========================
+
+
+            tensor[
+                self.raster_channels+0,
+                vx,vy,vz
+            ] = np.log1p(n)
+
+
+            tensor[
+                self.raster_channels+1,
+                vx,vy,vz
+            ] = mean / self.maxLogArsenic
+
+
+            tensor[
+                self.raster_channels+2,
+                vx,vy,vz
+            ] = median
+
+
+            tensor[
+                self.raster_channels+3,
+                vx,vy,vz
+            ] = p10
+
+
+            tensor[
+                self.raster_channels+4,
+                vx,vy,vz
+            ] = p90
+
+
+            tensor[
+                self.raster_channels+5,
+                vx,vy,vz
+            ] = p25
+
+
+            tensor[
+                self.raster_channels+6,
+                vx,vy,vz
+            ] = p75
+
+
+            tensor[
+                self.raster_channels+7,
+                vx,vy,vz
+            ] = p95
+
+
+
+            # spread features
+
+            tensor[
+                self.raster_channels+8,
+                vx,vy,vz
+            ] = (
+                p75-p25
+            )
+
+
+            tensor[
+                self.raster_channels+9,
+                vx,vy,vz
+            ] = (
+                p95-p90
+            )
+
+
+            tensor[
+                self.raster_channels+10,
+                vx,vy,vz
+            ] = (
+                p25-p10
+            )
+
+
+
+            # =========================
+            # DEPTH FEATURES
+            # =========================
+
+
+            tensor[
+                self.raster_channels+11,
+                vx,vy,vz
+            ] = (
+                depth_mean /
+                self.maxDepth
+            )
+
+
+            tensor[
+                self.raster_channels+12,
+                vx,vy,vz
+            ] = (
+                depth_std /
+                self.maxDepth
+            )
+
+
+
+            # confidence
+
+            tensor[
+                self.raster_channels+13,
+                vx,vy,vz
+            ] = confidence
+
+
+
+            # voxel location
+
+            tensor[
+                self.raster_channels+14,
+                vx,vy,vz
+            ] = norm_x
+
+
+            tensor[
+                self.raster_channels+15,
+                vx,vy,vz
+            ] = norm_y
+
         return tensor
 
     def pointNet(self, target_index):

@@ -15,19 +15,28 @@ choice=input("Pick Model:\n1. 3D CNN\n2. PointNet\n> ").strip()
 dataset=ArsenicDataset()
 train_loader=get_dataloader(dataset,BATCH_SIZE,NUM_WORKERS)
 val_loader=get_validation_dataloader(dataset,BATCH_SIZE,NUM_WORKERS)
-backbone=CNN(dataset.rasters,extra_channels=11) if choice=="1" else PointNetHead(input_features=15,embedding_size=256)
+backbone=CNN(dataset.raster_channels,extra_channels=18) if choice=="1" else PointNetHead(input_features=15,embedding_size=256)
 
 def gaussian_nll(mean,log_var,target):
     log_var=torch.clamp(log_var,-3,3)
     return (((target-mean)**2)/torch.exp(log_var)+log_var).mean()
 
-def gaussian_class_probability(mean,log_var):
-    mean=torch.clamp(mean,-2,8)
-    std=torch.nn.functional.softplus(torch.clamp(log_var,-3,3))+1e-3
-    n=Normal(mean,std)
-    low,high=torch.tensor(LOG_LOW,device=mean.device),torch.tensor(LOG_HIGH,device=mean.device)
-    p0=n.cdf(low);p1=n.cdf(high)-p0;p2=1-n.cdf(high)
-    return torch.stack([p0,p1,p2],1)
+def gaussian_class_probability(mean, log_var):
+
+    log_var = torch.clamp(log_var, -3, 3)
+
+    std = torch.exp(0.5 * log_var) + 1e-3
+
+    n = Normal(mean, std)
+
+    low = torch.tensor(LOG_LOW, device=mean.device)
+    high = torch.tensor(LOG_HIGH, device=mean.device)
+
+    p0 = n.cdf(low)
+    p1 = n.cdf(high) - p0
+    p2 = 1 - n.cdf(high)
+
+    return torch.stack([p0, p1, p2], 1)
 
 class Model(nn.Module):
     def __init__(self,b):
