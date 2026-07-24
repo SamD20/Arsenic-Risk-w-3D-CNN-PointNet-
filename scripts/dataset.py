@@ -2,20 +2,50 @@ import pandas as pd
 import numpy as np
 import rasterio
 import os
-from pyproj import Transformer
+from sklearn.neighbors import KDTree
 from dataloader import RISK_CLASSES
 
-transformer = Transformer.from_crs("EPSG:32646","EPSG:4326",always_xy=True)
 MAIN_FOLDER = "../data"
 RASTER_FOLDER = "./rasters"
 VOXELS_FOLDER = "./voxels"
 CSV_FILE = "wells.csv"
+CHEM_FILE = "rawChemistryDataAdm4.csv"
 TOTAL_PATCH_SIZE = [2250, 2250, 50]
 
 class ArsenicDataset:
     def __init__(self):
         self.df = pd.read_csv(os.path.join(MAIN_FOLDER, CSV_FILE))
         self.df = (self.df.dropna().reset_index(drop=True))
+
+        chem=pd.read_csv(os.path.join(MAIN_FOLDER,CHEM_FILE))
+        chem=chem.dropna(subset=["X","Y","WELL_DEPTH"]).reset_index(drop=True)
+        chem_features=["Fe","Mn","SO4","Ca","Mg","Na","Si","P_"]
+        for col in chem_features:
+            chem[col] = chem[col].apply(self.clean_censored)
+        chem[chem_features] = (chem[chem_features].fillna(chem[chem_features].median()))
+
+        chem_values = chem[chem_features].values.astype(np.float32)
+        self.chem_mean = chem_values.mean(axis=0)
+        self.chem_std = chem_values.std(axis=0) + 1e-6
+        chem_values = (chem_values - self.chem_mean) / self.chem_std
+        self.chem_values = chem_values
+        chem_coords=np.column_stack([chem["X"],chem["Y"],chem["WELL_DEPTH"]])
+        self.chem_tree=KDTree(chem_coords)
+
+        chem_distances, _ = self.chem_tree.query(
+            chem_coords,
+            k=5
+        )
+
+        chem_distances = chem_distances[:,1:] # remove itself
+
+        self.chem_dist_mean = np.log1p(
+            chem_distances.mean()
+        )
+
+        self.chem_dist_std = np.log1p(
+            chem_distances.std()
+        ) + 1e-6
 
         self.X = self.df["X"].values.astype(np.float32)
         self.Y = self.df["Y"].values.astype(np.float32)
@@ -101,7 +131,7 @@ class ArsenicDataset:
         self.yrange = int(TOTAL_PATCH_SIZE[1] / self.voxel_size[1])
         self.zrange = int(TOTAL_PATCH_SIZE[2] / self.voxel_size[2])
 
-        self.empty_tensor = np.zeros((self.raster_channels+18,self.xrange,self.yrange,self.zrange),dtype=np.float32)
+        self.empty_tensor = np.zeros((self.raster_channels+28,self.xrange,self.yrange,self.zrange),dtype=np.float32)
 
         print("\nBuilding voxel statistics cache...")
 
@@ -123,6 +153,16 @@ class ArsenicDataset:
                 ("p75", np.float32),
                 ("p90", np.float32),
                 ("p95", np.float32),
+                ("chem_Fe",np.float32),
+                ("chem_Mn",np.float32),
+                ("chem_SO4",np.float32),
+                ("chem_Ca",np.float32),
+                ("chem_Mg",np.float32),
+                ("chem_Na",np.float32),
+                ("chem_Si",np.float32),
+                ("chem_P",np.float32),
+                ("chem_distance",np.float32),
+                ("chem_count",np.float32)
             ],
         )
 
@@ -134,6 +174,7 @@ class ArsenicDataset:
             if count == 0:
                 continue
 
+            chem=self.calculateVoxelChemistry(voxel_id)
             wells = self.voxel_wells[start:start + count]
 
             arsenic = self.logArsenic[wells]
@@ -153,6 +194,18 @@ class ArsenicDataset:
             self.voxel_stats["p75"][voxel_id] = np.quantile(arsenic, 0.75)
             self.voxel_stats["p90"][voxel_id] = np.quantile(arsenic, 0.90)
             self.voxel_stats["p95"][voxel_id] = np.quantile(arsenic, 0.95)
+
+            self.voxel_stats["chem_Fe"][voxel_id]=chem[0]
+            self.voxel_stats["chem_Mn"][voxel_id]=chem[1]
+            self.voxel_stats["chem_SO4"][voxel_id]=chem[2]
+            self.voxel_stats["chem_Ca"][voxel_id]=chem[3]
+            self.voxel_stats["chem_Mg"][voxel_id]=chem[4]
+            self.voxel_stats["chem_Na"][voxel_id]=chem[5]
+            self.voxel_stats["chem_Si"][voxel_id]=chem[6]
+            self.voxel_stats["chem_P"][voxel_id]=chem[7]
+
+            self.voxel_stats["chem_distance"][voxel_id]=chem[8]
+            self.voxel_stats["chem_count"][voxel_id]=chem[9]
 
         self.voxel_layout = {}
         print("\nComputing Voxel Layout...")
@@ -207,6 +260,28 @@ class ArsenicDataset:
         voxel_id = self.lookup.get((vx,vy,vz))
 
         return voxel_id
+
+    def calculateVoxelChemistry(self,voxel_id):
+        voxel=self.voxels[voxel_id]
+        point=np.array([voxel["centroid_x"],voxel["centroid_y"],voxel["centroid_z"]]).reshape(1,-1)
+        dist,index=self.chem_tree.query(point,k=5)
+        values=self.chem_values[index[0]]
+        weights=1/(dist[0]+1e-6)
+        weights/=weights.sum()
+        chem=np.sum(values*weights[:,None],axis=0)
+        return np.append(chem,[dist.mean(),len(values)]).astype(np.float32)
+
+    def clean_censored(self,value):
+
+        if isinstance(value,str):
+
+            value=value.strip()
+
+            if value.startswith("<"):
+                number=float(value.replace("<","").strip())
+                return number/2
+
+        return float(value)
 
     def getVoxelCoords(self, voxel_id):
         voxel = self.voxels[voxel_id]
@@ -747,6 +822,56 @@ class ArsenicDataset:
                 vx,vy,vz
             ] = norm_y
 
+            stats=self.voxel_stats[thisVoxel]
+
+            tensor[
+            self.raster_channels+18,
+            vx,vy,vz
+            ]=stats["chem_Fe"]
+
+            tensor[
+            self.raster_channels+19,
+            vx,vy,vz
+            ]=stats["chem_Mn"]
+
+            tensor[
+            self.raster_channels+20,
+            vx,vy,vz
+            ]=stats["chem_SO4"]
+
+            tensor[
+            self.raster_channels+21,
+            vx,vy,vz
+            ]=stats["chem_Ca"]
+
+            tensor[
+            self.raster_channels+22,
+            vx,vy,vz
+            ]=stats["chem_Mg"]
+
+            tensor[
+            self.raster_channels+23,
+            vx,vy,vz
+            ]=stats["chem_Na"]
+
+            tensor[
+            self.raster_channels+24,
+            vx,vy,vz
+            ]=stats["chem_Si"]
+
+            tensor[
+            self.raster_channels+25,
+            vx,vy,vz
+            ]=stats["chem_P"]
+
+            tensor[
+            self.raster_channels+26,
+            vx,vy,vz]=(np.log1p(stats["chem_distance"]) - self.chem_dist_mean) / self.chem_dist_std
+
+            tensor[
+            self.raster_channels+27,
+            vx,vy,vz
+            ]=np.log1p(stats["chem_count"])
         return tensor
 
     def pointNet(self, target_index):

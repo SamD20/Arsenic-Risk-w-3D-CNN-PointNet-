@@ -15,7 +15,7 @@ dataset=ArsenicDataset()
 train_loader=get_dataloader(dataset,BATCH_SIZE,NUM_WORKERS)
 val_loader=get_validation_dataloader(dataset,BATCH_SIZE,NUM_WORKERS)
 
-backbone=CNN(dataset.raster_channels,18) if choice=="1" else PointNetHead(15,256)
+backbone=CNN(dataset.raster_channels,28) if choice=="1" else PointNetHead(15,256)
 
 BOUNDARIES=torch.tensor(np.log1p([10,25,50,100]),device=DEVICE)
 
