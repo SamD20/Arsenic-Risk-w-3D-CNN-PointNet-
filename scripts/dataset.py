@@ -50,6 +50,10 @@ class ArsenicDataset:
 
         self.X = self.df["X"].values.astype(np.float32)
         self.Y = self.df["Y"].values.astype(np.float32)
+
+        self.maxX = self.X.max()
+        self.maxY = self.Y.max()
+
         self.Depth = self.df["Depth"].values.astype(np.float32)
         self.Arsenic = self.df["Arsenic"].values.astype(np.float32)
         self.logArsenic = np.log1p(self.Arsenic)
@@ -58,6 +62,7 @@ class ArsenicDataset:
         self.x_std = self.X.std()
         self.y_mean = self.Y.mean()
         self.y_std = self.Y.std()
+        self.depth_mean = self.Depth.mean()
         self.depth_std = self.Depth.std()
 
         self.maxDepth = self.Depth.max()
@@ -211,6 +216,8 @@ class ArsenicDataset:
             self.voxel_stats["chem_distance"][voxel_id]=chem[8]
             self.voxel_stats["chem_count"][voxel_id]=chem[9]
 
+        self.maxWellCount = self.voxel_stats["well_count"].max()
+
         self.voxel_layout = {}
         print("\nComputing Voxel Layout...")
         self.buildVoxelLayout()
@@ -310,23 +317,20 @@ class ArsenicDataset:
         mask = vox["well_count"] > 0
 
         if not np.any(mask):
-            return np.zeros((len(coords),9),dtype=np.float32)
+            return np.zeros((len(coords),12),dtype=np.float32)
 
         vox = vox[mask]
         stats = self.voxel_stats[neighbours][mask]
-
 
         # voxel coordinates
         vx = vox["centroid_x"]
         vy = vox["centroid_y"]
         vz = vox["centroid_z"]
 
-
         # expand
         cx = coords[:,0,None]
         cy = coords[:,1,None]
         cz = coords[:,2,None]
-
 
         # distance from every grid cell to neighbour voxel
         voxel_dx = (vx-cx) / self.voxel_size[0]
@@ -340,7 +344,7 @@ class ArsenicDataset:
         ) + 1e-6
 
 
-        weights = 1 / (distance * 2)
+        weights = 1 / (distance * 10)
 
         weights *= np.log1p(
             stats["well_count"]
@@ -360,7 +364,7 @@ class ArsenicDataset:
 
 
         results = np.zeros(
-            (len(coords),9),
+            (len(coords),12),
             dtype=np.float32
         )
 
@@ -412,12 +416,16 @@ class ArsenicDataset:
 
 
         # confidence
-        voxel_confidence = np.sum(
-            np.log1p(stats["well_count"]) * np.exp(-distance/250),
-            axis=1
-        )
+        well_strength = np.sum(weights * np.log1p(stats["well_count"]),axis=1)
+        well_strength /= np.log1p(self.maxWellCount)
+        well_strength = np.clip(well_strength,0,1)
+        distance_strength = np.mean(np.exp(-distance / 10),axis=1)
+        confidence = (well_strength * distance_strength)
 
-        results[:,8] = 1 - np.exp(-voxel_confidence / 20)
+        results[:,8] = np.clip(confidence, 0, 1)
+        results[:,9] = (coords[:,0] - self.x_mean) / self.x_std
+        results[:,10] = (coords[:,1] - self.y_mean) / self.y_std
+        results[:,11] = (coords[:,2] - self.depth_mean) / self.depth_std
 
         return results
 
@@ -565,22 +573,6 @@ class ArsenicDataset:
 
         z_indices = np.arange(self.zrange) - self.zrange//2
 
-        depth_grid = (
-            voxelCoords[2]
-            -
-            z_indices[None,None,:] * self.voxel_size[2]
-        )
-
-        depth_grid = np.broadcast_to(
-            depth_grid,
-            (self.xrange,self.yrange,self.zrange)
-        )
-
-        tensor[self.raster_channels+16] = depth_grid / self.maxDepth
-        tensor[self.raster_channels+17] = (
-            depth_grid-self.Depth[target_index]
-        ) / TOTAL_PATCH_SIZE[2]
-
 
         # generate all voxel coordinates
         x = (
@@ -624,7 +616,7 @@ class ArsenicDataset:
             self.xrange,
             self.yrange,
             self.zrange,
-            9
+            12
         )
 
 
@@ -650,7 +642,10 @@ class ArsenicDataset:
         )
 
         tensor[self.raster_channels+13] = idw[:,:,:,8]
-
+        tensor[self.raster_channels+14] = idw[:,:,:,9]
+        tensor[self.raster_channels+15] = idw[:,:,:,10]
+        tensor[self.raster_channels+16] = idw[:,:,:,11] #absolute depth
+        tensor[self.raster_channels+17] = -z / 20 #relative depth
 
         # overwrite measured voxels
         for thisVoxel,vx,vy,vz,norm_x,norm_y in self.voxel_layout[targetVoxel]:
@@ -723,29 +718,18 @@ class ArsenicDataset:
             tensor[
                 self.raster_channels+11,
                 vx,vy,vz
-            ] = depth_mean/self.maxDepth
+            ] = depth_mean / self.maxDepth
 
             tensor[
                 self.raster_channels+12,
                 vx,vy,vz
-            ] = depth_std/self.maxDepth
+            ] = depth_std / (self.maxDepth / (2 * TOTAL_PATCH_SIZE[2]))
 
 
             tensor[
                 self.raster_channels+13,
                 vx,vy,vz
             ] = 1.0
-
-
-            tensor[
-                self.raster_channels+14,
-                vx,vy,vz
-            ] = norm_x
-
-            tensor[
-                self.raster_channels+15,
-                vx,vy,vz
-            ] = norm_y
 
 
             tensor[
