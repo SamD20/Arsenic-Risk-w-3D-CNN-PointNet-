@@ -377,11 +377,6 @@ class ArsenicDataset:
         vox = vox[mask]
         stats = stats[mask]
 
-
-        # ========================================================
-        # ONLY USE CURRENT CNN LAYER FOR IDW
-        # ========================================================
-
         target_z = self.voxels[target_voxel]["centroid_z"]
 
         mask = np.isclose(
@@ -394,9 +389,6 @@ class ArsenicDataset:
 
         vox = vox[mask]
         stats = stats[mask]
-
-        # ========================================================
-
 
         vx = vox["centroid_x"]
         vy = vox["centroid_y"]
