@@ -21,6 +21,9 @@ voxelSize = np.array([250,250,10],dtype=np.float32)
 df = pd.read_csv(CSV_PATH)
 print(f"{len(df)} total entries")
 df = df.dropna().reset_index(drop=True)
+print(f"{len(df)} after dropping NaN entries")
+counts = df.groupby("mou")["mou"].transform("size")
+df = df[counts >= 7]
 print(f"{len(df)} usable datapoints")
 
 x = df["X"].values.astype(np.float32)

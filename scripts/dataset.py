@@ -17,6 +17,8 @@ class ArsenicDataset:
     def __init__(self):
         self.df = pd.read_csv(os.path.join(MAIN_FOLDER, CSV_FILE))
         self.df = (self.df.dropna().reset_index(drop=True))
+        counts = self.df.groupby("mou")["mou"].transform("size")
+        self.df = self.df[counts >= 7]
 
         chem=pd.read_csv(os.path.join(MAIN_FOLDER,CHEM_FILE))
         chem=chem.dropna(subset=["X","Y","WELL_DEPTH"]).reset_index(drop=True)
@@ -308,19 +310,71 @@ class ArsenicDataset:
 
         return neighbours
 
-    def calculateIDWVoxel(self, coords, neighbours):
+    def getVoxelStats(self, voxel_id, target_index):
+        voxel = self.voxels[voxel_id]
 
-        # neighbour voxel data
+        start = voxel["well_start"]
+        count = voxel["well_count"]
+
+        if count == 0:
+            return None
+
+        wells = self.voxel_wells[start:start+count]
+
+        # Remove target if it is in this voxel
+        wells = wells[wells != target_index]
+
+        if len(wells) == 0:
+            return None
+
+        arsenic = self.logArsenic[wells]
+        depth = self.Depth[wells]
+
+        return {
+            "well_count": len(wells),
+            "mean": arsenic.mean(),
+            "median": np.quantile(arsenic, 0.50),
+            "p10": np.quantile(arsenic, 0.10),
+            "p25": np.quantile(arsenic, 0.25),
+            "p75": np.quantile(arsenic, 0.75),
+            "p90": np.quantile(arsenic, 0.90),
+            "p95": np.quantile(arsenic, 0.95),
+            "arsenic_sum": arsenic.sum(),
+            "depth_sum": depth.sum(),
+            "depth_sq_sum": np.square(depth).sum(),
+        }
+
+    def calculateIDWVoxel(self, coords, neighbours, target_voxel, target_well):
         vox = self.voxels[neighbours]
 
-        # only voxels containing wells
-        mask = vox["well_count"] > 0
+        stats = self.voxel_stats[neighbours].copy()
+
+        target_pos = np.where(neighbours == target_voxel)[0]
+
+        if len(target_pos):
+            i = target_pos[0]
+
+            target_stats = self.getVoxelStats(
+                target_voxel,
+                target_well
+            )
+
+            if target_stats is not None:
+                for key,value in target_stats.items():
+                    stats[key][i] = value
+            else:
+                # no remaining wells
+                stats["well_count"][i] = 0
+
+
+        # remove empty voxels AFTER target removal
+        mask = stats["well_count"] > 0
 
         if not np.any(mask):
             return np.zeros((len(coords),12),dtype=np.float32)
 
         vox = vox[mask]
-        stats = self.voxel_stats[neighbours][mask]
+        stats = stats[mask]
 
         # voxel coordinates
         vx = vox["centroid_x"]
@@ -344,7 +398,7 @@ class ArsenicDataset:
         ) + 1e-6
 
 
-        weights = 1 / (distance * 10)
+        weights = 1 / (distance * 5)
 
         weights *= np.log1p(
             stats["well_count"]
@@ -414,15 +468,21 @@ class ArsenicDataset:
             results[:,4]
         )
 
+        well_strength = np.mean(np.log1p(stats["well_count"]))
 
-        # confidence
-        well_strength = np.sum(weights * np.log1p(stats["well_count"]),axis=1)
         well_strength /= np.log1p(self.maxWellCount)
-        well_strength = np.clip(well_strength,0,1)
-        distance_strength = np.mean(np.exp(-distance / 10),axis=1)
-        confidence = (well_strength * distance_strength)
 
-        results[:,8] = np.clip(confidence, 0, 1)
+        distance_strength = np.max(
+            np.exp(-distance),
+            axis=1
+        )
+        well_strength = np.clip(well_strength, 0, 0.5)
+        distance_strength = np.clip(distance_strength, 0, 0.5)
+
+        confidence = well_strength + distance_strength
+
+        results[:,8] = confidence
+
         results[:,9] = (coords[:,0] - self.x_mean) / self.x_std
         results[:,10] = (coords[:,1] - self.y_mean) / self.y_std
         results[:,11] = (coords[:,2] - self.depth_mean) / self.depth_std
@@ -609,7 +669,9 @@ class ArsenicDataset:
 
         idw = self.calculateIDWVoxel(
             coords,
-            neighbours
+            neighbours,
+            targetVoxel,
+            target_index
         )
 
         idw = idw.reshape(
