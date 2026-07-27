@@ -345,6 +345,7 @@ class ArsenicDataset:
         }
 
     def calculateIDWVoxel(self, coords, neighbours, target_voxel, target_well):
+
         vox = self.voxels[neighbours]
 
         stats = self.voxel_stats[neighbours].copy()
@@ -352,6 +353,7 @@ class ArsenicDataset:
         target_pos = np.where(neighbours == target_voxel)[0]
 
         if len(target_pos):
+
             i = target_pos[0]
 
             target_stats = self.getVoxelStats(
@@ -360,41 +362,57 @@ class ArsenicDataset:
             )
 
             if target_stats is not None:
-                for key,value in target_stats.items():
+                for key, value in target_stats.items():
                     stats[key][i] = value
             else:
-                # no remaining wells
                 stats["well_count"][i] = 0
 
 
-        # remove empty voxels AFTER target removal
+        # remove empty voxels
         mask = stats["well_count"] > 0
 
         if not np.any(mask):
-            return np.zeros((len(coords),12),dtype=np.float32)
+            return np.zeros((len(coords), 12), dtype=np.float32)
 
         vox = vox[mask]
         stats = stats[mask]
 
-        # voxel coordinates
+
+        # ========================================================
+        # ONLY USE CURRENT CNN LAYER FOR IDW
+        # ========================================================
+
+        target_z = self.voxels[target_voxel]["centroid_z"]
+
+        mask = np.isclose(
+            vox["centroid_z"],
+            target_z
+        )
+
+        if not np.any(mask):
+            return np.zeros((len(coords), 12), dtype=np.float32)
+
+        vox = vox[mask]
+        stats = stats[mask]
+
+        # ========================================================
+
+
         vx = vox["centroid_x"]
         vy = vox["centroid_y"]
-        vz = vox["centroid_z"]
 
-        # expand
-        cx = coords[:,0,None]
-        cy = coords[:,1,None]
-        cz = coords[:,2,None]
 
-        # distance from every grid cell to neighbour voxel
-        voxel_dx = (vx-cx) / self.voxel_size[0]
-        voxel_dy = (vy-cy) / self.voxel_size[1]
-        voxel_dz = (vz-cz) / self.voxel_size[2]
+        cx = coords[:, 0, None]
+        cy = coords[:, 1, None]
+
+
+        voxel_dx = (vx - cx) / self.voxel_size[0]
+        voxel_dy = (vy - cy) / self.voxel_size[1]
+
 
         distance = np.sqrt(
-            voxel_dx**2 +
-            voxel_dy**2 +
-            voxel_dz**2
+            voxel_dx ** 2 +
+            voxel_dy ** 2
         ) + 1e-6
 
 
@@ -404,10 +422,12 @@ class ArsenicDataset:
             stats["well_count"]
         )
 
-        weights /= weights.sum(axis=1,keepdims=True)
+        weights /= weights.sum(
+            axis=1,
+            keepdims=True
+        )
 
 
-        # extract voxel statistics
         mean = stats["mean"]
         median = stats["median"]
         p10 = stats["p10"]
@@ -418,96 +438,70 @@ class ArsenicDataset:
 
 
         results = np.zeros(
-            (len(coords),12),
+            (len(coords), 12),
             dtype=np.float32
         )
 
 
-        # weighted interpolation
-        results[:,0] = np.sum(
-            weights * mean,
-            axis=1
-        ) / self.maxLogArsenic
-
-
-        results[:,2] = np.sum(
-            weights * median,
-            axis=1
+        results[:,0] = (
+            np.sum(weights * mean, axis=1)
+            / self.maxLogArsenic
         )
 
-        results[:,3] = np.sum(
-            weights * p10,
-            axis=1
-        )
-
-        results[:,4] = np.sum(
-            weights * p25,
-            axis=1
-        )
-
-        results[:,5] = np.sum(
-            weights * p75,
-            axis=1
-        )
-
-        results[:,6] = np.sum(
-            weights * p90,
-            axis=1
-        )
-
-        results[:,7] = np.sum(
-            weights * p95,
-            axis=1
-        )
+        results[:,2] = np.sum(weights * median, axis=1)
+        results[:,3] = np.sum(weights * p10, axis=1)
+        results[:,4] = np.sum(weights * p25, axis=1)
+        results[:,5] = np.sum(weights * p75, axis=1)
+        results[:,6] = np.sum(weights * p90, axis=1)
+        results[:,7] = np.sum(weights * p95, axis=1)
 
 
-        # estimate spread from interpolated quartiles
         results[:,1] = (
             results[:,5]
             -
             results[:,4]
         )
 
-        well_strength = np.mean(np.log1p(stats["well_count"]))
 
-        well_strength /= np.log1p(self.maxWellCount)
+        well_strength = np.mean(
+            np.log1p(stats["well_count"])
+        )
+
+        well_strength /= np.log1p(
+            self.maxWellCount
+        )
+
 
         distance_strength = np.max(
             np.exp(-distance),
             axis=1
         )
-        well_strength = np.clip(well_strength, 0, 0.5)
-        distance_strength = np.clip(distance_strength, 0, 0.5)
 
-        confidence = well_strength + distance_strength
+
+        confidence = (
+            np.clip(well_strength,0,0.5)
+            +
+            np.clip(distance_strength,0,0.5)
+        )
+
 
         results[:,8] = confidence
 
-        results[:,9] = (coords[:,0] - self.x_mean) / self.x_std
-        results[:,10] = (coords[:,1] - self.y_mean) / self.y_std
-        results[:,11] = (coords[:,2] - self.depth_mean) / self.depth_std
+
+        results[:,9] = (
+            coords[:,0] - self.x_mean
+        ) / self.x_std
+
+        results[:,10] = (
+            coords[:,1] - self.y_mean
+        ) / self.y_std
+
+        results[:,11] = (
+            coords[:,2] - self.depth_mean
+        ) / self.depth_std
+
 
         return results
-
-    def getRasterValue(self, x, y):
-        values = []
-
-        for raster in self.rasters.values():
-
-            data = raster["data"]
-            transform = raster["transform"]
-
-            col, row = ~transform * (x, y)
-
-            col = int(col)
-            row = int(row)
-
-            if row < 0 or col < 0 or row >= data.shape[0] or col >= data.shape[1]:
-                values.append(np.nan)
-            else:
-                values.append(data[row, col])
-
-        return values
 
     def buildVoxelLayout(self):
         for voxel_id in range(len(self.voxels)):
