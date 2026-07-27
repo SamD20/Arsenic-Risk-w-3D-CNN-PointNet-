@@ -667,8 +667,6 @@ class ArsenicDataset:
             12
         )
 
-
-        # fill everything with IDW first
         tensor[self.raster_channels+1] = idw[:,:,:,0]
         tensor[self.raster_channels+2] = idw[:,:,:,2]
         tensor[self.raster_channels+3] = idw[:,:,:,3]
