@@ -67,6 +67,10 @@ class ArsenicDataset:
         self.depth_mean = self.Depth.mean()
         self.depth_std = self.Depth.std()
 
+        self.well_tree = KDTree(
+        np.column_stack([self.X, self.Y])
+        )
+
         self.maxDepth = self.Depth.max()
         self.maxLogArsenic = np.percentile(self.logArsenic, 99)
 
@@ -139,7 +143,7 @@ class ArsenicDataset:
         self.yrange = int(TOTAL_PATCH_SIZE[1] / self.voxel_size[1])
         self.zrange = int(TOTAL_PATCH_SIZE[2] / self.voxel_size[2])
 
-        self.empty_tensor = np.zeros((self.raster_channels+28,self.xrange,self.yrange,self.zrange),dtype=np.float32)
+        self.empty_tensor = np.zeros((self.raster_channels+34,self.xrange,self.yrange,self.zrange),dtype=np.float32)
 
         print("\nBuilding voxel statistics cache...")
 
@@ -170,7 +174,13 @@ class ArsenicDataset:
                 ("chem_Si",np.float32),
                 ("chem_P",np.float32),
                 ("chem_distance",np.float32),
-                ("chem_count",np.float32)
+                ("chem_count",np.float32),
+                ("low_fraction", np.float32),
+                ("medium_fraction", np.float32),
+                ("high_fraction", np.float32),
+                ("distance_low", np.float32),
+                ("distance_medium", np.float32),
+                ("distance_high", np.float32),
             ],
         )
 
@@ -217,6 +227,16 @@ class ArsenicDataset:
 
             self.voxel_stats["chem_distance"][voxel_id]=chem[8]
             self.voxel_stats["chem_count"][voxel_id]=chem[9]
+
+            risk_features = self.calculateVoxelRiskFractions(voxel_id)
+
+            self.voxel_stats["low_fraction"][voxel_id] = risk_features[0]
+            self.voxel_stats["medium_fraction"][voxel_id] = risk_features[1]
+            self.voxel_stats["high_fraction"][voxel_id] = risk_features[2]
+
+            self.voxel_stats["distance_low"][voxel_id] = risk_features[3]
+            self.voxel_stats["distance_medium"][voxel_id] = risk_features[4]
+            self.voxel_stats["distance_high"][voxel_id] = risk_features[5]
 
         self.maxWellCount = self.voxel_stats["well_count"].max()
 
@@ -296,6 +316,77 @@ class ArsenicDataset:
 
         return float(value)
 
+    def calculateVoxelRiskFractions(self, voxel_id):
+
+        voxel = self.voxels[voxel_id]
+
+        x = voxel["centroid_x"]
+        y = voxel["centroid_y"]
+        z = voxel["centroid_z"]
+
+        # query nearby wells horizontally
+        dist, idx = self.well_tree.query(
+            [[x,y]],
+            k=1000
+        )
+
+        wells = idx[0]
+        distances = dist[0]
+
+        # same depth window as voxel
+        depth_mask = np.abs(
+            self.Depth[wells] - z
+        ) <= 5
+
+        wells = wells[depth_mask]
+        distances = distances[depth_mask]
+
+
+        if len(wells)==0:
+            return np.array([
+                0.33,0.33,0.33,
+                np.log1p(5000),
+                np.log1p(5000),
+                np.log1p(5000)
+            ],dtype=np.float32)
+
+
+        arsenic = self.Arsenic[wells]
+
+
+        low = arsenic <= RISK_CLASSES[0]
+        medium = (
+            (arsenic > RISK_CLASSES[0]) &
+            (arsenic <= RISK_CLASSES[1])
+        )
+        high = arsenic > RISK_CLASSES[1]
+
+
+        fractions = [
+            low.mean(),
+            medium.mean(),
+            high.mean()
+        ]
+
+
+        distances_out = []
+
+        for cls in [low, medium, high]:
+
+            if np.any(cls):
+                distances_out.append(
+                    np.log1p(distances[cls].min())
+                )
+            else:
+                distances_out.append(
+                    np.log1p(5000)
+                )
+
+        return np.array(
+            fractions + distances_out,
+            dtype=np.float32
+        )
+
     def getVoxelCoords(self, voxel_id):
         voxel = self.voxels[voxel_id]
         return [voxel["centroid_x"],voxel["centroid_y"],voxel["centroid_z"]]
@@ -372,7 +463,7 @@ class ArsenicDataset:
         mask = stats["well_count"] > 0
 
         if not np.any(mask):
-            return np.zeros((len(coords), 12), dtype=np.float32)
+            return np.zeros((len(coords), 27), dtype=np.float32)
 
         vox = vox[mask]
         stats = stats[mask]
@@ -385,7 +476,7 @@ class ArsenicDataset:
         )
 
         if not np.any(mask):
-            return np.zeros((len(coords), 12), dtype=np.float32)
+            return np.zeros((len(coords), 27), dtype=np.float32)
 
         vox = vox[mask]
         stats = stats[mask]
@@ -430,7 +521,7 @@ class ArsenicDataset:
 
 
         results = np.zeros(
-            (len(coords), 12),
+            (len(coords), 22),
             dtype=np.float32
         )
 
@@ -492,6 +583,62 @@ class ArsenicDataset:
             coords[:,2] - self.depth_mean
         ) / self.depth_std
 
+        chem_Fe = stats["chem_Fe"]
+        chem_Mn = stats["chem_Mn"]
+        chem_SO4 = stats["chem_SO4"]
+        chem_Ca = stats["chem_Ca"]
+        chem_Mg = stats["chem_Mg"]
+        chem_Na = stats["chem_Na"]
+        chem_Si = stats["chem_Si"]
+        chem_P = stats["chem_P"]
+
+        chem_distance = stats["chem_distance"]
+        chem_count = stats["chem_count"]
+
+        # chemistry IDW
+
+        results[:,12] = np.sum(weights * chem_Fe, axis=1)
+        results[:,13] = np.sum(weights * chem_Mn, axis=1)
+        results[:,14] = np.sum(weights * chem_SO4, axis=1)
+        results[:,15] = np.sum(weights * chem_Ca, axis=1)
+        results[:,16] = np.sum(weights * chem_Mg, axis=1)
+        results[:,17] = np.sum(weights * chem_Na, axis=1)
+        results[:,18] = np.sum(weights * chem_Si, axis=1)
+        results[:,19] = np.sum(weights * chem_P, axis=1)
+        results[:,20] = np.sum(weights * chem_distance, axis=1) / 5000
+
+        results[:,21] = np.sum(
+            weights * stats["low_fraction"],
+            axis=1
+        )
+
+        results[:,22] = np.sum(
+            weights * stats["medium_fraction"],
+            axis=1
+        )
+
+        results[:,23] = np.sum(
+            weights * stats["high_fraction"],
+            axis=1
+        )
+
+
+        results[:,24] = np.sum(
+            weights * stats["distance_low"],
+            axis=1
+        ) / 5000
+
+
+        results[:,25] = np.sum(
+            weights * stats["distance_medium"],
+            axis=1
+        ) / 5000
+
+
+        results[:,26] = np.sum(
+            weights * stats["distance_high"],
+            axis=1
+        ) / 5000
 
         return results
 
@@ -664,7 +811,7 @@ class ArsenicDataset:
             self.xrange,
             self.yrange,
             self.zrange,
-            12
+            27
         )
 
         tensor[self.raster_channels+1] = idw[:,:,:,0]
@@ -692,6 +839,20 @@ class ArsenicDataset:
         tensor[self.raster_channels+15] = idw[:,:,:,10]
         tensor[self.raster_channels+16] = idw[:,:,:,11] #absolute depth
         tensor[self.raster_channels+17] = -z / 20 #relative depth
+
+        tensor[
+            self.raster_channels+18:self.raster_channels+27,
+            ] = [
+                idw[:,:,:,12],
+                idw[:,:,:,13],
+                idw[:,:,:,14],
+                idw[:,:,:,15],
+                idw[:,:,:,16],
+                idw[:,:,:,17],
+                idw[:,:,:,18],
+                idw[:,:,:,19],
+                idw[:,:,:,20],
+            ]
 
         # overwrite measured voxels
         for thisVoxel,vx,vy,vz,norm_x,norm_y in self.voxel_layout[targetVoxel]:
@@ -776,36 +937,18 @@ class ArsenicDataset:
                 vx,vy,vz
             ] = 1.0
 
-
-            tensor[
-                self.raster_channels+18:self.raster_channels+26,
-                vx,vy,vz
-            ] = [
-                stats["chem_Fe"],
-                stats["chem_Mn"],
-                stats["chem_SO4"],
-                stats["chem_Ca"],
-                stats["chem_Mg"],
-                stats["chem_Na"],
-                stats["chem_Si"],
-                stats["chem_P"]
-            ]
-
-            tensor[
-                self.raster_channels+26,
-                vx,vy,vz
-            ] = (
-                np.log1p(stats["chem_distance"])
-                -
-                self.chem_dist_mean
-            ) / self.chem_dist_std
-
-
             tensor[
                 self.raster_channels+27,
                 vx,vy,vz
             ] = np.log1p(stats["chem_count"])
 
+        tensor[self.raster_channels+28] = idw[:,:,:,21]
+        tensor[self.raster_channels+29] = idw[:,:,:,22]
+        tensor[self.raster_channels+30] = idw[:,:,:,23]
+
+        tensor[self.raster_channels+31] = idw[:,:,:,24]
+        tensor[self.raster_channels+32] = idw[:,:,:,25]
+        tensor[self.raster_channels+33] = idw[:,:,:,26]
 
         return tensor
 
