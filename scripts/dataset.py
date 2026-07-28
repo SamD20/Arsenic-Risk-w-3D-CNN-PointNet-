@@ -712,7 +712,6 @@ class ArsenicDataset:
             p90 = stats["p90"]
             p95 = stats["p95"]
 
-
             depth_mean = stats["depth_sum"]/n
 
             depth_std = np.sqrt(
