@@ -2,7 +2,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import random
 from dataset import ArsenicDataset
-from dataloader import RISK_CLASSES
 
 dataset = ArsenicDataset()
 
@@ -15,9 +14,9 @@ def get_random_index(risk):
     for i in range(len(dataset)):
         arsenic = dataset.Arsenic[i]
 
-        if arsenic <= RISK_CLASSES[0]:
+        if arsenic <= 10:
             r = 0
-        elif arsenic <= RISK_CLASSES[1]:
+        elif arsenic <= 50:
             r = 1
         else:
             r = 2

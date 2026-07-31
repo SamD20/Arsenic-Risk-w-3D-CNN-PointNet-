@@ -4,7 +4,6 @@ import rasterio
 from rasterio.transform import rowcol
 import os
 from sklearn.neighbors import KDTree
-from dataloader import RISK_CLASSES
 
 MAIN_FOLDER = "../data"
 RASTER_FOLDER = "./rasters"
@@ -53,9 +52,6 @@ class ArsenicDataset:
         self.X = self.df["X"].values.astype(np.float32)
         self.Y = self.df["Y"].values.astype(np.float32)
 
-        self.maxX = self.X.max()
-        self.maxY = self.Y.max()
-
         self.Depth = self.df["Depth"].values.astype(np.float32)
         self.Arsenic = self.df["Arsenic"].values.astype(np.float32)
         self.logArsenic = np.log1p(self.Arsenic)
@@ -77,10 +73,6 @@ class ArsenicDataset:
         self.maxDistance = np.sqrt(TOTAL_PATCH_SIZE[0]**2 + TOTAL_PATCH_SIZE[1]**2 + TOTAL_PATCH_SIZE[2]**2)
         lats = self.df["lat"].values
         lons = self.df["lon"].values
-        self.lon_mean = lons.mean()
-        self.lon_std = lons.std()
-        self.lat_mean = lats.mean()
-        self.lat_std = lats.std()
 
         self.rasters = {}
         raster_folder = os.path.join(MAIN_FOLDER, RASTER_FOLDER)
@@ -244,8 +236,6 @@ class ArsenicDataset:
         print("\nComputing Voxel Layout...")
         self.buildVoxelLayout()
 
-        self.idw_cache = {}
-
         self.raster_cache = {}
         print("\nBuilding raster cache...")
         self.buildRasterCache()
@@ -261,24 +251,13 @@ class ArsenicDataset:
     def __getitem__(self, idx):
         arsenic = self.Arsenic[idx]
 
-        if arsenic <= RISK_CLASSES[0]:
-            risk = 0
-        elif arsenic <= RISK_CLASSES[1]:
-            risk = 1
-        else:
-            risk = 2
-
-        ordinal = np.array([
-            risk >= 1,   # above 10
-            risk >= 2    # above 50
-        ], dtype=np.float32)
+        risk = int(arsenic > 10)
 
         return {
         "voxel": self.cnnInput(idx),
         "points": self.pointNet(idx),
         "label": self.logArsenic[idx],
         "risk": risk,
-        "ordinal": ordinal
         }
     
     def getVoxelID(self, well_index):
@@ -316,7 +295,7 @@ class ArsenicDataset:
 
         return float(value)
 
-    def calculateVoxelRiskFractions(self, voxel_id):
+    def calculateVoxelRiskFractions(self, voxel_id, target_index = None):
 
         voxel = self.voxels[voxel_id]
 
@@ -341,6 +320,10 @@ class ArsenicDataset:
         wells = wells[depth_mask]
         distances = distances[depth_mask]
 
+        if target_index is not None:
+            mask = wells != target_index
+            wells = wells[mask]
+            distances = distances[mask]
 
         if len(wells)==0:
             return np.array([
@@ -350,16 +333,16 @@ class ArsenicDataset:
                 np.log1p(5000)
             ],dtype=np.float32)
 
-
         arsenic = self.Arsenic[wells]
 
+        low = arsenic <= 10
 
-        low = arsenic <= RISK_CLASSES[0]
         medium = (
-            (arsenic > RISK_CLASSES[0]) &
-            (arsenic <= RISK_CLASSES[1])
+            (arsenic > 10) &
+            (arsenic <= 50)
         )
-        high = arsenic > RISK_CLASSES[1]
+
+        high = arsenic > 50
 
 
         fractions = [
@@ -421,6 +404,11 @@ class ArsenicDataset:
         arsenic = self.logArsenic[wells]
         depth = self.Depth[wells]
 
+        risk_features = self.calculateVoxelRiskFractions(
+        voxel_id,
+        target_index
+        )
+
         return {
             "well_count": len(wells),
             "mean": arsenic.mean(),
@@ -433,6 +421,12 @@ class ArsenicDataset:
             "arsenic_sum": arsenic.sum(),
             "depth_sum": depth.sum(),
             "depth_sq_sum": np.square(depth).sum(),
+            "low_fraction": risk_features[0],
+            "medium_fraction" : risk_features[1],
+            "high_fraction" : risk_features[2],
+            "distance_low" : risk_features[3],
+            "distance_medium" : risk_features[4],
+            "distance_high" : risk_features[5],
         }
 
     def calculateIDWVoxel(self, coords, neighbours, target_voxel, target_well):
@@ -521,10 +515,9 @@ class ArsenicDataset:
 
 
         results = np.zeros(
-            (len(coords), 22),
+            (len(coords), 27),
             dtype=np.float32
         )
-
 
         results[:,0] = (
             np.sum(weights * mean, axis=1)
